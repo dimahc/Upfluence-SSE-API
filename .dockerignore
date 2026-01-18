@@ -1,0 +1,21 @@
+# Binary
+server
+
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Documentation
+README.md
+docs/
+choices.md
+
+# Test artifacts
+*.test
+coverage.out
