@@ -1,0 +1,273 @@
+openapi: 3.0.3
+info:
+  title: Upfluence SSE Stream Analyzer
+  description: |
+    An HTTP API that consumes the Upfluence SSE stream of social media posts
+    and computes percentile statistics (P50, P90, P99) for engagement metrics
+    over configurable time windows.
+
+    ## Modes of Operation
+
+    The API operates in two modes depending on the requested duration:
+
+    - **REALTIME** (≤ 60s): Opens a fresh SSE connection, blocks for the full duration,
+      then returns exact statistics for that window.
+    - **HISTORICAL** (> 60s): Queries pre-collected data from a background worker
+      and returns immediately.
+
+    ## Time Interpretation
+
+    The `duration` parameter specifies how far back to look. Data is bucketed by
+    **arrival time** (when the SSE event was received), not by the post's original
+    creation timestamp. The response includes the actual post timestamps so clients
+    can see the true time range of the data.
+  version: 1.0.0
+  contact:
+    name: API Support
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+paths:
+  /analysis:
+    get:
+      summary: Analyze engagement metrics
+      description: |
+        Computes P50, P90, and P99 percentiles for the specified engagement
+        dimension over the requested time window.
+
+        **Behavior by duration:**
+        - `duration ≤ 60s`: Request blocks for the full duration while collecting
+          data in realtime from the SSE stream.
+        - `duration > 60s`: Returns immediately using data collected by the
+          background worker.
+
+        **Note:** For historical queries, the server must have been running long
+        enough to accumulate data. If no data is available for the requested
+        window, a 404 is returned.
+      operationId: getAnalysis
+      tags:
+        - Analysis
+      parameters:
+        - name: duration
+          in: query
+          required: true
+          description: |
+            Time window for analysis. Accepts Go duration format.
+
+            Examples: `30s`, `5m`, `1h`, `24h`
+
+            - Minimum: `5s`
+            - Maximum: `24h`
+
+            Durations ≤ 60s trigger realtime mode (blocking).
+            Durations > 60s trigger historical mode (immediate response).
+          schema:
+            type: string
+            pattern: '^(\d+)(s|m|h)$'
+            example: "30s"
+          examples:
+            realtime:
+              value: "30s"
+              summary: Realtime mode - blocks for 30 seconds
+            short_historical:
+              value: "5m"
+              summary: Historical mode - last 5 minutes
+            long_historical:
+              value: "24h"
+              summary: Historical mode - last 24 hours
+        - name: dimension
+          in: query
+          required: true
+          description: |
+            The engagement metric to analyze. Percentiles will be computed
+            for this dimension across all posts in the time window.
+
+            Posts missing this dimension are excluded from the calculation.
+          schema:
+            type: string
+            enum:
+              - likes
+              - comments
+              - favorites
+              - retweets
+          example: "likes"
+      responses:
+        "200":
+          description: Successfully computed percentile statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisResponse"
+              examples:
+                likes_response:
+                  summary: Analysis of likes
+                  value:
+                    total_posts: 42
+                    minimum_timestamp: 1737000000
+                    maximum_timestamp: 1737000030
+                    likes_p50: 150
+                    likes_p90: 2500
+                    likes_p99: 15000
+                comments_response:
+                  summary: Analysis of comments
+                  value:
+                    total_posts: 128
+                    minimum_timestamp: 1737000000
+                    maximum_timestamp: 1737000300
+                    comments_p50: 5
+                    comments_p90: 42
+                    comments_p99: 156
+        "400":
+          description: Invalid or missing parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missing_duration:
+                  summary: Missing duration parameter
+                  value:
+                    error: "missing required parameter: duration"
+                invalid_duration:
+                  summary: Invalid duration format
+                  value:
+                    error: "invalid duration format: xyz"
+                duration_too_short:
+                  summary: Duration below minimum
+                  value:
+                    error: "duration must be at least 5s"
+                duration_too_long:
+                  summary: Duration above maximum
+                  value:
+                    error: "duration must be at most 24h"
+                missing_dimension:
+                  summary: Missing dimension parameter
+                  value:
+                    error: "missing required parameter: dimension"
+                invalid_dimension:
+                  summary: Invalid dimension value
+                  value:
+                    error: "invalid dimension: views (valid: likes, comments, favorites, retweets)"
+        "404":
+          description: No data available
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                no_data:
+                  summary: No posts collected
+                  value:
+                    error: "no data available for requested dimension and duration"
+        "405":
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                method_not_allowed:
+                  summary: Non-GET request
+                  value:
+                    error: "method not allowed"
+
+components:
+  schemas:
+    AnalysisResponse:
+      type: object
+      description: Percentile statistics for the requested dimension and time window
+      required:
+        - total_posts
+        - minimum_timestamp
+        - maximum_timestamp
+      properties:
+        total_posts:
+          type: integer
+          description: |
+            Total number of posts processed in the time window.
+            Note: This may be higher than the number of posts with the
+            requested dimension, as some posts may lack certain metrics.
+          example: 42
+          minimum: 1
+        minimum_timestamp:
+          type: integer
+          format: int64
+          description: |
+            Unix timestamp (seconds) of the oldest post in the result set.
+            This is the post's original creation time, not when it was received.
+          example: 1737000000
+        maximum_timestamp:
+          type: integer
+          format: int64
+          description: |
+            Unix timestamp (seconds) of the newest post in the result set.
+            This is the post's original creation time, not when it was received.
+          example: 1737000030
+        likes_p50:
+          type: integer
+          description: 50th percentile (median) of likes. Only present when dimension=likes.
+          example: 150
+        likes_p90:
+          type: integer
+          description: 90th percentile of likes. Only present when dimension=likes.
+          example: 2500
+        likes_p99:
+          type: integer
+          description: 99th percentile of likes. Only present when dimension=likes.
+          example: 15000
+        comments_p50:
+          type: integer
+          description: 50th percentile (median) of comments. Only present when dimension=comments.
+          example: 5
+        comments_p90:
+          type: integer
+          description: 90th percentile of comments. Only present when dimension=comments.
+          example: 42
+        comments_p99:
+          type: integer
+          description: 99th percentile of comments. Only present when dimension=comments.
+          example: 156
+        favorites_p50:
+          type: integer
+          description: 50th percentile (median) of favorites. Only present when dimension=favorites.
+          example: 10
+        favorites_p90:
+          type: integer
+          description: 90th percentile of favorites. Only present when dimension=favorites.
+          example: 85
+        favorites_p99:
+          type: integer
+          description: 99th percentile of favorites. Only present when dimension=favorites.
+          example: 320
+        retweets_p50:
+          type: integer
+          description: 50th percentile (median) of retweets. Only present when dimension=retweets.
+          example: 3
+        retweets_p90:
+          type: integer
+          description: 90th percentile of retweets. Only present when dimension=retweets.
+          example: 25
+        retweets_p99:
+          type: integer
+          description: 99th percentile of retweets. Only present when dimension=retweets.
+          example: 120
+
+    ErrorResponse:
+      type: object
+      description: Error details when the request cannot be fulfilled
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+          example: "missing required parameter: duration"
+
+tags:
+  - name: Analysis
+    description: Endpoints for analyzing engagement metrics from the SSE stream
