@@ -69,7 +69,7 @@ func percentile(sorted []int, p int) int {
 	if n == 1 {
 		return sorted[0]
 	}
-	rank := (p * n) / 100
+	rank := (p * (n - 1)) / 100
 	if rank >= n {
 		rank = n - 1
 	}
